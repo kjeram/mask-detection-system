@@ -131,6 +131,7 @@ dmypy.json
 # Dataset folder
 dataset/
 
-images/
-data/
-back/
+# Face detection
+haarcascades/
+deploy.prototxt
+res10_300x300_ssd_iter_140000_fp16.caffemodel
