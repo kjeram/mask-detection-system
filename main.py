@@ -45,21 +45,73 @@ else:
     model_folder = 'model'
     model = load_model(model_folder)
 
+# Thermal camera
+if arm:
+    import board, busio
+    import adafruit_mlx90640
+
+    # Setup I2C
+    i2c = busio.I2C(board.SCL, board.SDA, frequency=400_000)
+
+    # Begin MLX90640 with I2C comm
+    while True:
+        try:
+            mlx = adafruit_mlx90640.MLX90640(i2c)
+            mlx.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_8_HZ
+            break
+        # If there is a bad physical connection to the thermal camera 
+        except ValueError:
+            pass
+
 # Image properties
 image_size = 96
 
 # Camera init
 video_capture = cv2.VideoCapture(0)
-ret, frame = video_capture.read()
+
+# Used for fps calculation
+time1 = 0
+time2 = 0
 
 # Main loop
-while True:
-    # Start timer
+while(video_capture.isOpened()):
+    # Start timer for fps calculation
     time1 = time.time()
 
     # Read frame from camera
-    _, frame = video_capture.read()
+    ret, frame = video_capture.read()
+    if not ret:
+        break
     h, w = frame.shape[:2]
+
+    if arm:
+        # Setup array for sorting all 768 temperatures
+        mlx_frame = np.zeros((24*32,))
+        try:
+            mlx.getFrame(mlx_frame)
+        # If there is a bad physical connection to the thermal camera
+        except OSError:
+            pass
+
+        # Reshape array to matrix
+        t_frame = np.reshape(mlx_frame, (24,32))
+        # Flip thermal frame
+        t_frame = np.flip(t_frame, axis=0)
+        # Upscale thermal frame to match camera
+        t_frame = t_frame.repeat(20, axis=0).repeat(20, axis=1)
+
+        # Create frame for display alongside camera frame
+        # Normailize thermal frame
+        t_frame_d = (t_frame - np.min(t_frame)) / np.ptp(t_frame)
+        # Round all values in thermal frame
+        t_frame_d = np.round(t_frame_d * 255, 0).astype(np.uint8)
+        # Add dimensions to frame to make it appear as RGB
+        t_frame_d = np.stack((t_frame_d,)*3, axis=-1)
+
+        # Flip camera frame
+        frame = cv2.flip(frame, -1)
+        # Crop and resize camera frame to try and match thermal frame
+        frame = cv2.resize(frame[20:400, 40:527], (640,480))
 
     # OpenCV DNN pre-processing
     blob = cv2.dnn.blobFromImage(frame, 1.0, (image_size * 2, image_size * 2))
@@ -101,20 +153,35 @@ while True:
                 color = (0,0,255)
                 acc = pred[0][1]
 
-            # Draw a rectangle around the faces
+            # Draw a rectangle around the faces with classification
             text = label + ' (' +  str(round(acc * 100)) + '%)'
             cv2.rectangle(frame, (startX, startY), (endX, endY), color, 2)
             cv2.putText(frame, text, (startX, startY - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
 
-    # Stop timer & calculate execution time
-    time2 = time.time()
-    classification_time = np.round(time2-time1, 3)
-    cv2.putText(frame, str(classification_time), (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 1, cv2.LINE_AA)
+            if arm:
+                # Crop thermal frame of face
+                t_frame_d_crop = t_frame[startY:endY, startX:endX]
+                # Calculate mean temperature of cropped thermal frame 
+                temp = np.round(np.mean(t_frame_d_crop), 1)
 
+                # Draw rectangle around thermal frame with temperature
+                cv2.rectangle(t_frame_d, (startX, startY), (endX, endY), color, 2)
+                cv2.putText(t_frame_d, str(temp), (startX, startY - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+
+    # Calculate fps
+    fps = 1/(time1 - time2)
+    time2 = time1
+    # Draw fps on frame
+    cv2.putText(frame, str(int(fps)) + 'fps', (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 1, cv2.LINE_AA)
+
+    if arm:
+        # Combine camera and thermal frame
+        frame = np.concatenate((frame, t_frame_d), axis=0)
+        
     # Display the resulting frame
     cv2.imshow('window', frame)
     
-    # Key code for ESC
+    # Press ESC to quit
     if cv2.waitKey(1) & 0xFF == 27:  
         break
 
