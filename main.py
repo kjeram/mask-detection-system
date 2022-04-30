@@ -64,126 +64,117 @@ if arm:
             pass
 
 # Image properties
-image_size = 96
+image_size = 224
 
-# Camera init
-video_capture = cv2.VideoCapture(0)
+unique_labels = ['no mask', 'mask']
 
-# Used for fps calculation
-time1 = 0
-time2 = 0
+while True:
+    # Simulate a system interaction
+    input('Press Enter to start.')
 
-# Main loop
-while(video_capture.isOpened()):
-    # Start timer for fps calculation
-    time1 = time.time()
+    # Camera init
+    video_capture = cv2.VideoCapture(0)
 
-    # Read frame from camera
-    ret, frame = video_capture.read()
-    if not ret:
-        break
-    h, w = frame.shape[:2]
+    detected = 0
 
+    results_mask = np.array([]).astype(np.int32)
     if arm:
-        # Setup array for sorting all 768 temperatures
-        mlx_frame = np.zeros((24*32,))
-        try:
-            mlx.getFrame(mlx_frame)
-        # If there is a bad physical connection to the thermal camera
-        except OSError:
-            pass
+        results_temp = np.array([])
 
-        # Reshape array to matrix
-        t_frame = np.reshape(mlx_frame, (24,32))
-        # Flip thermal frame
-        t_frame = np.flip(t_frame, axis=0)
-        # Upscale thermal frame to match camera
-        t_frame = t_frame.repeat(20, axis=0).repeat(20, axis=1)
+    # Set amount of detection and has be an odd number
+    while detected < 7:
+        # Read frame from camera
+        ret, frame = video_capture.read()
+        if not ret:
+            break
+        h, w = frame.shape[:2]
 
-        # Create frame for display alongside camera frame
-        # Normailize thermal frame
-        t_frame_d = (t_frame - np.min(t_frame)) / np.ptp(t_frame)
-        # Round all values in thermal frame
-        t_frame_d = np.round(t_frame_d * 255, 0).astype(np.uint8)
-        # Add dimensions to frame to make it appear as RGB
-        t_frame_d = np.stack((t_frame_d,)*3, axis=-1)
+        if arm:
+            # Setup array for sorting all 768 temperatures
+            mlx_frame = np.zeros((24*32,))
+            try:
+                mlx.getFrame(mlx_frame)
+            # If there is a bad physical connection to the thermal camera
+            except OSError:
+                pass
 
-        # Flip camera frame
-        frame = cv2.flip(frame, -1)
-        # Crop and resize camera frame to try and match thermal frame
-        frame = cv2.resize(frame[20:400, 40:527], (640,480))
+            # Reshape array to matrix
+            t_frame = np.reshape(mlx_frame, (24,32))
+            # Flip thermal frame
+            t_frame = np.flip(t_frame, axis=0)
+            # Upscale thermal frame to match camera
+            t_frame = t_frame.repeat(20, axis=0).repeat(20, axis=1)
 
-    # OpenCV DNN pre-processing
-    blob = cv2.dnn.blobFromImage(frame, 1.0, (image_size * 2, image_size * 2))
-    # Process the pre-processed frame & find faces
-    face_detect.setInput(blob)
-    faces = face_detect.forward()
+            # Create frame for display alongside camera frame
+            # Normailize thermal frame
+            t_frame_d = (t_frame - np.min(t_frame)) / np.ptp(t_frame)
+            # Round all values in thermal frame
+            t_frame_d = np.round(t_frame_d * 255, 0).astype(np.uint8)
+            # # Add dimensions to frame to make it appear as RGB
+            # t_frame_d = np.stack((t_frame_d,)*3, axis=-1)
 
-    # For all faces detected in frame
-    for i in range(0, faces.shape[2]):
-        # Get the confidence that it is a face 
-        confidence = faces[0, 0, i, 2]
-        if confidence > 0.7:
-            # Get coordinates for face
-            box = faces[0, 0, i, 3:7] * np.array([w, h, w, h])
-            startX, startY, endX, endY = center_box(box)
+            # Flip camera frame
+            frame = cv2.flip(frame, -1)
+            # Crop and resize camera frame to try and match thermal frame
+            frame = cv2.resize(frame[20:400, 40:527], (640,480))
 
-            # ensure the bounding boxes fall within the dimensions of the frame
-            startX, startY = max(0, startX), max(0, startY)
-            endX, endY = min(w - 1, endX), min(h - 1, endY)
+       # Display the resulting frame
+        cv2.imshow('window', frame)
+        cv2.waitKey(1)
 
-            # Pre-process frame
-            frame_crop = frame[startY:endY, startX:endX]
-            frame_crop_resize = cv2.resize(frame_crop, (image_size, image_size), cv2.INTER_AREA)
-            frame_crop_resize_reshape = np.array(frame_crop_resize, dtype=np.float32).reshape(-1, image_size, image_size, 3)
+        # OpenCV DNN pre-processing
+        blob = cv2.dnn.blobFromImage(frame, 1.0, (image_size, image_size))
+        # Process the pre-processed frame & find faces
+        face_detect.setInput(blob)
+        faces = face_detect.forward()
 
-            # Make a prediction
-            if arm:
-                pred = classify_image(model, frame_crop_resize_reshape)
-            else:
-                pred = model.predict(frame_crop_resize_reshape)
+        # For all faces detected in frame
+        for i in range(0, faces.shape[2]):
+            # Get the confidence that it is a face 
+            confidence = faces[0, 0, i, 2]
+            if confidence > 0.7:
+                # A face is found, add 1 to detected
+                detected += 1
 
-            # Convert prediction to lables
-            if pred[0].argmax(axis=0) == 0:
-                label = 'Mask'
-                color = (0,255,0)
-                acc = pred[0][0]
-            else:
-                label = 'No Mask'
-                color = (0,0,255)
-                acc = pred[0][1]
+                # Get coordinates for face
+                box = faces[0, 0, i, 3:7] * np.array([w, h, w, h])
+                startX, startY, endX, endY = center_box(box)
 
-            # Draw a rectangle around the faces with classification
-            text = label + ' (' +  str(round(acc * 100)) + '%)'
-            cv2.rectangle(frame, (startX, startY), (endX, endY), color, 2)
-            cv2.putText(frame, text, (startX, startY - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+                # ensure the bounding boxes fall within the dimensions of the frame
+                startX, startY = max(0, startX), max(0, startY)
+                endX, endY = min(w - 1, endX), min(h - 1, endY)
 
-            if arm:
-                # Crop thermal frame of face
-                t_frame_d_crop = t_frame[startY:endY, startX:endX]
-                # Calculate mean temperature of cropped thermal frame 
-                temp = np.round(np.mean(t_frame_d_crop), 1)
+                # Pre-process frame
+                frame_crop = frame[startY:endY, startX:endX]
+                frame_crop_resize = cv2.resize(frame_crop, (image_size, image_size), cv2.INTER_AREA)
+                frame_crop_resize_reshape = np.array(frame_crop_resize, dtype=np.float32).reshape(-1, image_size, image_size, 3)
 
-                # Draw rectangle around thermal frame with temperature
-                cv2.rectangle(t_frame_d, (startX, startY), (endX, endY), color, 2)
-                cv2.putText(t_frame_d, str(temp), (startX, startY - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+                # Make a prediction
+                if arm:
+                    pred = classify_image(model, frame_crop_resize_reshape)
+                else:
+                    pred = model.predict(frame_crop_resize_reshape)
 
-    # Calculate fps
-    fps = 1/(time1 - time2)
-    time2 = time1
-    # Draw fps on frame
-    cv2.putText(frame, str(int(fps)) + 'fps', (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 1, cv2.LINE_AA)
+                # Convert prediction to lables
+                pred_index = np.argmax(pred[0])
+                # Append the prediction to the results
+                results_mask = np.append(results_mask, pred_index)
 
+                if arm:
+                    # Crop thermal frame of face
+                    t_frame_d_crop = t_frame[startY:endY, startX:endX]
+                    # Calculate mean temperature of cropped thermal frame
+                    # temp = np.round(np.mean(t_frame_d_crop), 1)
+                    temp = t_frame_d_crop[round(t_frame_d_crop.shape[0] / 2)][round(t_frame_d_crop.shape[1] / 2)]
+                    # Append the temperature to the results
+                    results_temp = np.append(results_temp, temp)
+
+    video_capture.release()
+    cv2.destroyAllWindows()
+
+    # Get the most common prediction
+    results_mask = np.bincount(results_mask).argmax()
     if arm:
-        # Combine camera and thermal frame
-        frame = np.concatenate((frame, t_frame_d), axis=0)
-        
-    # Display the resulting frame
-    cv2.imshow('window', frame)
+        results_temp = results_temp.mean()
     
-    # Press ESC to quit
-    if cv2.waitKey(1) & 0xFF == 27:  
-        break
-
-video_capture.release()
-cv2.destroyAllWindows()
+    print(f'Results show {unique_labels[results_mask]}' + '{0}'.format(f', and your temperature is {np.round(results_temp, 1)}C' if arm else '.'))
